@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Metro Rush - Ads Ready</title>
+  <style>
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:system-ui,Segoe UI,Roboto,Arial;
+      background:linear-gradient(#0f1720,#071019);
+      color:#fff;
+      text-align:center;
+      padding:12px 0;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+    }
+
+    .panel{
+      width:min(460px,94%);
+      background:#0d1114;
+      border:1px solid rgba(255,255,255,0.06);
+      padding:18px;
+      border-radius:12px;
+      margin-top:28px;
+    }
+
+    .panel h1{margin:6px 0 8px}
+    .panel p{margin:8px 0}
+    .small{color:#9aa6b2;font-size:13px;margin-top:8px}
+
+    .topbar{
+      width:min(460px,94%);
+      display:flex;
+      gap:12px;
+      align-items:center;
+      justify-content:center;
+      margin-top:8px;
+    }
+
+    #gameCanvas{
+      margin-top:14px;
+      border-radius:8px;
+      border:2px solid rgba(255,255,255,0.06);
+      background:linear-gradient(#2b2b2b,#202020);
+      touch-action:none;
+    }
+
+    button{
+      background:#ff9f1c;
+      color:#081119;
+      border:0;
+      padding:10px 14px;
+      font-size:16px;
+      border-radius:10px;
+      cursor:pointer;
+    }
+    button.small{padding:6px 10px;font-size:14px;border-radius:8px}
+
+    .row{display:flex;justify-content:center;gap:12px;margin-top:12px}
+
+    @media (max-width:480px){
+      #gameCanvas{width:92vw;height:calc(92vw * 1.5)}
+      .panel{margin-top:18px}
+    }
+  </style>
+</head>
+<body>
+  <!-- Menu -->
+  <div id="menu" class="panel">
+    <h1>Metro Rush</h1>
+    <p>Swipe or use arrow keys. Jump on trains, collect coins.</p>
+    <button id="startBtn">▶ Start</button>
+    <p class="small">Ads will be shown between runs. Revive uses rewarded ad.</p>
+  </div>
+
+  <!-- HUD -->
+  <div id="hud" class="topbar" style="display:none;">
+    <div id="score">Score: 0</div>
+    <div id="coins">Coins: 0</div>
+    <div id="high">High: 0</div>
+    <button id="pauseBtn" class="small">⏸ Pause</button>
+  </div>
+
+  <!-- Canvas -->
+  <canvas id="gameCanvas" width="400" height="600" style="display:none;"></canvas>
+
+  <!-- Game Over -->
+  <div id="gameOver" class="panel" style="display:none;">
+    <h1>Game Over</h1>
+    <p id="finalScore">Score: 0</p>
+    <p id="finalCoins">Coins: 0</p>
+    <div class="row">
+      <button id="reviveBtn">🎁 Revive (Watch Ad)</button>
+      <button id="restartBtn">🔁 Restart</button>
+    </div>
+    <p class="small">Highscore saved locally.</p>
+  </div>
+
+  <script>
+    /* -------- GAME JS (merged) -------- */
+
+    const startBtn = document.getElementById('startBtn');
+    const menu = document.getElementById('menu');
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const hud = document.getElementById('hud');
+    const scoreEl = document.getElementById('score');
+    const coinsEl = document.getElementById('coins');
+    const highEl = document.getElementById('high');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    const gameOverPanel = document.getElementById('gameOver');
+    const finalScoreEl = document.getElementById('finalScore');
+    const finalCoinsEl = document.getElementById('finalCoins');
+    const reviveBtn = document.getElementById('reviveBtn');
+    const restartBtn = document.getElementById('restartBtn');
+
+    const SAVE_KEY = 'metro_rush_v1_ads';
+
+    // Canvas
+    const W = 400, H = 600;
+    canvas.width = W; canvas.height = H;
+
+    // Game state
+    const LANES = [75,175,275];
+    let running=false, paused=false, gameOver=false;
+    let score=0, coinCount=0, coinPoints=0;
+    let obstacleSpeed=4;
+    let obstacles=[], coins=[];
+    let obstacleTimer=0, coinTimer=0;
+    let revived=false;
+
+    // Player
+    const player = { lane:1, x:LANES[1], y:500, w:44, h:44, vy:0, jumping:false, onTrain:false };
+
+    // Storage
+    function loadStats(){ try{ return JSON.parse(localStorage.getItem(SAVE_KEY))||{high:0,totalCoins:0} } catch(e){ return {high:0,totalCoins:0} } }
+    function saveStats(high, addCoins=0){ const s=loadStats(); s.high=Math.max(s.high||0,high||0); s.totalCoins=(s.totalCoins||0)+(addCoins||0); localStorage.setItem(SAVE_KEY, JSON.stringify(s)); }
+
+    // HUD
+    function updateHUD(){ scoreEl.innerText = 'Score: ' + (Math.floor(score)+coinPoints); coinsEl.innerText = 'Coins: ' + coinCount; highEl.innerText = 'High: ' + (loadStats().high || 0); }
+
+    // Game flow
+    startBtn.addEventListener('click', ()=>{ menu.style.display='none'; canvas.style.display='block'; hud.style.display='flex'; showBannerAd(); startRun(); });
+    pauseBtn.addEventListener('click', ()=>{ if (!running || gameOver) return; paused = !paused; pauseBtn.innerText = paused ? '▶ Resume' : '⏸ Pause'; if (!paused) requestAnimationFrame(loop); });
+    reviveBtn.addEventListener('click', ()=>{ showRewardAd(()=>{ onRewardedRevive(); }); });
+    restartBtn.addEventListener('click', ()=>{ location.reload(); });
+
+    // Input
+    document.addEventListener('keydown', e=>{ if (!running || paused || gameOver) return; const k=e.key.toLowerCase();
+      if ((k==='arrowleft' || k==='a') && player.lane>0){ player.lane--; player.x = LANES[player.lane]; }
+      if ((k==='arrowright' || k==='d') && player.lane<2){ player.lane++; player.x = LANES[player.lane]; }
+      if ((k==='arrowup' || k===' ' || k==='w') && !player.jumping){ player.jumping=true; player.vy=-12; player.onTrain=false; }
+      if (k==='p'){ paused = !paused; if (!paused) requestAnimationFrame(loop); pauseBtn.innerText = paused ? '▶ Resume' : '⏸ Pause'; }
+    });
+    let tStartX=0,tStartY=0;
+    document.addEventListener('touchstart', e=>{ if (!running || paused || gameOver) return; const t=e.changedTouches[0]; tStartX=t.screenX; tStartY=t.screenY; });
+    document.addEventListener('touchend', e=>{ if (!running || paused || gameOver) return; const t=e.changedTouches[0]; const dx=t.screenX-tStartX, dy=t.screenY-tStartY; const TH=30;
+      if (Math.abs(dx)>Math.abs(dy)){ if (dx>TH && player.lane<2){ player.lane++; player.x=LANES[player.lane]; } else if (dx<-TH && player.lane>0){ player.lane--; player.x=LANES[player.lane]; } }
+      else { if (dy< -TH && !player.jumping){ player.jumping=true; player.vy=-12; player.onTrain=false; } }
+    });
+
+    function pickColor(){ const colors=['#4a76ff','#4db6ac','#ff7043','#9e9e9e','#8e44ad']; return colors[Math.floor(Math.random()*colors.length)]; }
+    function spawnTrain(){ const laneX=LANES[Math.floor(Math.random()*LANES.length)]; const r=Math.random(); let h = (r<0.45)?100:(r<0.85?180:280); obstacles.push({ x: laneX-10, y: -h, w:80, h: h, color: pickColor() }); }
+    function spawnCoin(){ const laneX=LANES[Math.floor(Math.random()*LANES.length)]; coins.push({ x: laneX+8, y:-24, r:10, collected:false }); }
+
+    function startRun(){ running=true; paused=false; gameOver=false; revived=false; score=0; coinCount=0; coinPoints=0; obstacleSpeed=4; obstacles=[]; coins=[]; obstacleTimer=0; coinTimer=0; player.lane=1; player.x=LANES[1]; player.y=500; player.jumping=false; player.vy=0; updateHUD(); requestAnimationFrame(loop); }
+    function onRewardedRevive(){ if (!gameOver || revived) return; revived=true; gameOver=false; running=true; player.lane=1; player.x=LANES[1]; player.y=420; player.jumping=true; player.vy=-10; obstacleSpeed=Math.max(3, obstacleSpeed-1); gameOverPanelHide(); hud.style.display='flex'; pauseBtn.style.display='inline-block'; requestAnimationFrame(loop); }
+
+    // Ad hooks
+    function showBannerAd(){ console.log('[Ad] showBannerAd called (web fallback).'); }
+    function hideBannerAd(){ console.log('[Ad] hideBannerAd called (web fallback).'); }
+    function showInterstitialAd(onClosed){ console.log('[Ad] showInterstitialAd called (web fallback).'); setTimeout(()=>{ if (typeof onClosed === 'function') onClosed(); }, 800); }
+    function showRewardAd(onRewarded){ console.log('[Ad] showRewardAd called (web fallback).'); setTimeout(()=>{ if (typeof onRewarded === 'function') onRewarded(); }, 1000); }
+
+    function showGameOver(){ hideBannerAd(); const combined=Math.floor(score)+coinPoints; saveStats(combined, coinCount); gameOverPanel.style.display='block'; hud.style.display='none'; pauseBtn.style.display='none'; finalScoreEl.innerText='Score: '+(Math.floor(score)+coinPoints); finalCoinsEl.innerText='Coins: '+coinCount; }
+    function gameOverPanelHide(){ gameOverPanel.style.display='none'; }
+
+    function loop(){ if (!running||paused||gameOver) return;
+      obstacleTimer++; coinTimer++;
+      if (obstacleTimer > 90){ spawnTrain(); obstacleTimer = 0; }
+      if (coinTimer > 60){ spawnCoin(); coinTimer = 0; }
+      if (player.jumping){ player.y += player.vy; player.vy += 0.8; }
+      ctx.clearRect(0,0,W,H); drawBackground();
+      let landed=false;
+      for (let obs of obstacles){
+        obs.y += obstacleSpeed; drawTrain(obs);
+        const bottom = player.y + player.h;
+        if (bottom <= obs.y + 12 && bottom >= obs.y - 8 && player.x + player.w > obs.x && player.x < obs.x + obs.w){
+          player.y = obs.y - player.h; player.jumping = false; player.vy = 0; landed = true; player.onTrain = true;
+        }
+        if (player.x < obs.x + obs.w && player.x + player.w > obs.x && player.y + player.h > obs.y + 12 && player.y < obs.y + obs.h){
+          running = false; gameOver = true; showGameOver(); return;
+        }
+      }
+      for (let c of coins){ c.y += obstacleSpeed; if (!c.collected && circleRectOverlap(c, player)){ c.collected = true; coinCount++; coinPoints += 10; } }
+      obstacles = obstacles.filter(o => o.y < H + 400); coins = coins.filter(c => !c.collected && c.y < H + 60);
+      if (!landed && player.y < 500){ player.y += 4; player.onTrain=false; }
+      if (player.y >= 500){ player.y = 500; player.jumping=false; player.vy=0; player.onTrain=false; }
+      drawPlayer(player); for (let c of coins) drawCoin(c);
+      score += 1; if (Math.floor(score) % 300 === 0) obstacleSpeed += 0.35;
+      updateHUD(); requestAnimationFrame(loop);
+    }
+
+    function drawBackground(){ ctx.fillStyle = '#101219'; ctx.fillRect(0,0,W,H); ctx.fillStyle = '#111214'; ctx.fillRect(0,H-120,W,120); ctx.strokeStyle='rgba(255,255,255,0.03)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(W/3,0); ctx.lineTo(W/3,H); ctx.moveTo(2*W/3,0); ctx.lineTo(2*W/3,H); ctx.stroke(); }
+    function drawRoundedRect(x,y,w,h,fill,radius=6){ ctx.fillStyle=fill; ctx.beginPath(); ctx.moveTo(x+radius,y); ctx.arcTo(x+w,y,x+w,y+h,radius); ctx.arcTo(x+w,y+h,x,y+h,radius); ctx.arcTo(x,y+h,x,y,radius); ctx.arcTo(x,y,x+w,y,radius); ctx.closePath(); ctx.fill(); }
+    function drawTrain(obs){ drawRoundedRect(obs.x,obs.y,obs.w,obs.h,obs.color||'#4a76ff',8); ctx.fillStyle='#222'; const winW=Math.max(12, obs.w*0.2), winH=Math.max(8, obs.h*0.08); ctx.fillRect(obs.x+8, obs.y+10, winW, winH); ctx.fillRect(obs.x+obs.w-8-winW, obs.y+10, winW, winH); ctx.fillStyle='#0e1012'; const wheelY=obs.y+obs.h-8; ctx.beginPath(); ctx.arc(obs.x+14,wheelY,6,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(obs.x+obs.w-14,wheelY,6,0,Math.PI*2); ctx.fill(); }
+    function drawPlayer(p){ drawRoundedRect(p.x,p.y,p.w,p.h,'#4fffdfff',8); ctx.beginPath(); ctx.fillStyle='#f1c40f'; ctx.arc(p.x+p.w*0.5,p.y-6,12,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#111'; ctx.beginPath(); ctx.arc(p.x+p.w*0.45,p.y-8,2.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(p.x+p.w*0.6,p.y-8,2.5,0,Math.PI*2); ctx.fill(); }
+    function drawCoin(c){ ctx.beginPath(); ctx.fillStyle='#ffd54f'; ctx.arc(c.x+c.r,c.y+c.r,c.r,0,Math.PI*2); ctx.fill(); ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.fillRect(c.x+c.r-3,c.y+c.r-6,3,3); }
+    function circleRectOverlap(c,r){ const cx=c.x+c.r, cy=c.y+c.r; const testX=Math.max(r.x, Math.min(cx, r.x+r.w)); const testY=Math.max(r.y, Math.min(cy, r.y+r.h)); const dx=cx-testX, dy=cy-testY; return (dx*dx+dy*dy) <= (c.r*c.r); }
+
+    (function init(){ const s=loadStats(); highEl.innerText='High: '+(s.high||0); updateHUD(); })();
+    setInterval(()=>{ if (running && !paused && !gameOver) spawnTrain(); },1500);
+    setInterval(()=>{ if (running && !paused && !gameOver) spawnCoin(); },1200);
+  </script>
+</body>
+</html>
